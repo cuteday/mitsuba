@@ -13,7 +13,7 @@ doc/plugins_generated.tex
 .sconf_temp
 build/release
 build/debug
-vbuild/
+vbuild
 debian
 .sconsign.dblite
 config.py
@@ -50,4 +50,4 @@ scenes/
 .settings
 .cproject
 .project
-.vscode/
+.vscode
