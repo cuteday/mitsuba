@@ -11,6 +11,9 @@ plugins += env.SharedLibrary('ptracer', ['ptracer/ptracer.cpp', 'ptracer/ptracer
 plugins += env.SharedLibrary('photonmapper', ['photonmapper/photonmapper.cpp', 'photonmapper/bre.cpp'])
 plugins += env.SharedLibrary('ppm', ['photonmapper/ppm.cpp'])
 plugins += env.SharedLibrary('sppm', ['photonmapper/sppm.cpp'])
+plugins += env.SharedLibrary('bdpm', ['photonmapper/bdpm.cpp'])
+plugins += env.SharedLibrary('bdpm2', ['photonmapper/bdpm2.cpp'])
+plugins += env.SharedLibrary('bdpm3', ['photonmapper/bdpm3.cpp'])
 
 # Miscellaneous
 plugins += env.SharedLibrary('vpl', ['vpl/vpl.cpp'])
