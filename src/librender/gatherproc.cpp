@@ -157,6 +157,31 @@ public:
                 -wi, weight, depth-nullInteractions));
     }
 
+    /* [for BDPM] added override functions */
+    void handleSurfaceInteraction(int depth_, int nullInteractions, bool delta,
+            const Intersection &its, const Medium *medium,
+            const Spectrum &weight,
+            ProbRec& invPdf, ProbRec& pathProb) {
+        int bsdfType = its.getBSDF()->getType(), depth = depth_ - nullInteractions;
+        if (!(bsdfType & BSDF::EDiffuseReflection) && !(bsdfType & BSDF::EGlossyReflection))
+            return;
+
+        if ((m_type == GatherPhotonProcess::ECausticPhotons && depth > 1 && delta)
+         || (m_type == GatherPhotonProcess::ESurfacePhotons && depth > 1 && !delta)
+         || (m_type == GatherPhotonProcess::EAllSurfacePhotons))
+            m_workResult->put(Photon(its.p, its.geoFrame.n, -its.toWorld(its.wi), weight, depth, 
+                invPdf, pathProb));
+    }
+
+    void handleMediumInteraction(int depth, int nullInteractions, bool delta,
+            const MediumSamplingRecord &mRec, const Medium *medium,
+            const Vector &wi, const Spectrum &weight,
+            ProbRec& invPdf, ProbRec& pathProb) {
+        if (m_type == GatherPhotonProcess::EVolumePhotons)
+            m_workResult->put(Photon(mRec.p, Normal(0.0f, 0.0f, 0.0f),
+                -wi, weight, depth-nullInteractions, invPdf, pathProb));
+    }
+
     MTS_DECLARE_CLASS()
 protected:
     /// Virtual destructor

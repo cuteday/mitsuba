@@ -1,20 +1,4 @@
-/*
-    This file is part of Mitsuba, a physically based rendering system.
-
-    Copyright (c) 2007-2014 by Wenzel Jakob and others.
-
-    Mitsuba is free software; you can redistribute it and/or modify
-    it under the terms of the GNU General Public License Version 3
-    as published by the Free Software Foundation.
-
-    Mitsuba is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-    GNU General Public License for more details.
-
-    You should have received a copy of the GNU General Public License
-    along with this program. If not, see <http://www.gnu.org/licenses/>.
-*/
+/* BDPM modified on PM */
 
 #include <mitsuba/core/plugin.h>
 #include <mitsuba/render/common.h>
@@ -162,6 +146,7 @@ public:
             }
         }
 
+        
         /* Adapt to scene extents */
         m_globalLookupRadius = m_globalLookupRadiusRel * scene->getBSphere().radius;
 
@@ -257,7 +242,7 @@ public:
         if (bsdfVal.isZero())
             return LiSurf;
 
-        /* Trace a ray in this direction */
+        /* Trace a ray in this direction, but leave computing intersection to next recurse... */
         RayDifferential bsdfRay(its.p, its.toWorld(bRec.wo), ray.time);
 
         rRec2.recursiveQuery(rRec, RadianceQueryRecord::ERadiance);

@@ -1,76 +1,10 @@
-/*
-    This file is part of Mitsuba, a physically based rendering system.
-
-    Copyright (c) 2007-2014 by Wenzel Jakob and others.
-
-    Mitsuba is free software; you can redistribute it and/or modify
-    it under the terms of the GNU General Public License Version 3
-    as published by the Free Software Foundation.
-
-    Mitsuba is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-    GNU General Public License for more details.
-
-    You should have received a copy of the GNU General Public License
-    along with this program. If not, see <http://www.gnu.org/licenses/>.
-*/
+/* BDPM modified on PPM */
 
 #include <mitsuba/core/plugin.h>
 #include <mitsuba/render/gatherproc.h>
 #include <mitsuba/render/renderqueue.h>
 
 MTS_NAMESPACE_BEGIN
-
-/*!\plugin{ppm}{Progressive photon mapping integrator}
- * \order{7}
- * \parameters{
- *     \parameter{maxDepth}{\Integer}{Specifies the longest path depth
- *         in the generated output image (where \code{-1} corresponds to $\infty$).
- *         A value of \code{1} will only render directly visible light sources.
- *         \code{2} will lead to single-bounce (direct-only) illumination,
- *         and so on. \default{\code{-1}}
- *     }
- *     \parameter{photonCount}{\Integer}{Number of photons to be shot per iteration\default{250000}}
- *     \parameter{initialRadius}{\Float}{Initial radius of gather points in world space units.
- *         \default{0, i.e. decide automatically}}
- *     \parameter{alpha}{\Float}{Radius reduction parameter \code{alpha} from the paper\default{0.7}}
- *     \parameter{granularity}{\Integer}{
-        Granularity of photon tracing work units for the purpose
-        of parallelization (in \# of shot particles) \default{0, i.e. decide automatically}
- *     }
- *     \parameter{rrDepth}{\Integer}{Specifies the minimum path depth, after
- *        which the implementation will start to use the ``russian roulette''
- *        path termination criterion. \default{\code{5}}
- *     }
- *     \parameter{maxPasses}{\Integer}{Maximum number of passes to render (where \code{-1}
- *        corresponds to rendering until stopped manually). \default{\code{-1}}}
- * }
- * This plugin implements the progressive photon mapping algorithm by Hachisuka et al.
- * \cite{Hachisuka2008Progressive}. Progressive photon mapping is a variant of photon
- * mapping that alternates between photon shooting and gathering passes that involve
- * a relatively small (e.g. 250K) numbers of photons that are subsequently discarded.
- *
- * This is done in a way such that the variance and bias of the resulting output
- * vanish as the number of passes tends to infinity. The progressive nature of this
- * method enables renderings with an effectively arbitrary number of photons
- * without exhausting the available system memory.
- *
- * The desired sample count specified in the sample generator configuration
- * determines how many photon query points are created per pixel. It should not be
- * set too high, since the rendering time is approximately proportional to
- * this number. For good results, use between 2-4 samples along with the
- * \code{ldsampler}. Once started, the rendering process continues indefinitely
- * until it is manually stopped.
- *
- * \remarks{
- *    \item Due to the data dependencies of this algorithm, the parallelization is
- *    limited to the local machine (i.e. cluster-wide renderings are not implemented)
- *    \item This integrator does not handle participating media
- *    \item This integrator does not currently work with subsurface scattering
- *    models.
- * }
- */
 
 class BDPM2Integrator : public Integrator {
 public:
@@ -287,17 +221,17 @@ public:
                 ++count;
             }
 
-            if (bsdf->getType() & BSDF::EDelta) {
-                int compCount = bsdf->getComponentCount();
-                for (int i=0; i<compCount; i++) {
-                    if ((bsdf->getType(i) & BSDF::EDelta) == 0)
-                        continue;
+            //if (bsdf->getType() & BSDF::EDelta) {
+            //    int compCount = bsdf->getComponentCount();
+            //    for (int i=0; i<compCount; i++) {
+            //        if ((bsdf->getType(i) & BSDF::EDelta) == 0)
+            //            continue;
                     /* Sample the BSDF and recurse */
                     BSDFSamplingRecord bRec(p.its, sampler);
-                    bRec.component = i;
+            //        bRec.component = i;
                     Spectrum bsdfVal = bsdf->sample(bRec, Point2(0.0f));
-                    if (bsdfVal.isZero())
-                        continue;
+            //        if (bsdfVal.isZero())
+            //            continue;
                     bsdfVal = bsdf->eval(bRec, EDiscrete);
 
                     const Float rrProb = depth < 4 ? 1 : 0.8f;
@@ -306,8 +240,8 @@ public:
                         count += createGatherPoints(scene, recursiveRay, sample, sampler,
                             weight * bsdfVal / rrProb, gatherPoints, depth+1);
                     }
-                }
-            }
+                //}
+            //}
         } else if (depth == 1) {
             /* Generate an invalid sample */
             p.emission = scene->evalEnvironment(ray);
