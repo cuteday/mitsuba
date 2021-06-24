@@ -7,9 +7,9 @@
 
 MTS_NAMESPACE_BEGIN
 
-class BDPM3Integrator : public SamplingIntegrator {
+class BDPM4Integrator : public SamplingIntegrator {
 public:
-    BDPM3Integrator(const Properties &props) : SamplingIntegrator(props),
+    BDPM4Integrator(const Properties &props) : SamplingIntegrator(props),
           m_parentIntegrator(NULL) {
         /* Depth to start using russian roulette when tracing photons */
         m_rrDepth = props.getInteger("rrDepth", 5);
@@ -50,7 +50,7 @@ public:
     }
 
     /// Unserialize from a binary data stream
-    BDPM3Integrator(Stream *stream, InstanceManager *manager)
+    BDPM4Integrator(Stream *stream, InstanceManager *manager)
      : SamplingIntegrator(stream, manager), m_parentIntegrator(NULL) {
         m_maxDepth = stream->readInt();
         m_rrDepth = stream->readInt();
@@ -64,7 +64,7 @@ public:
         configure();
     }
 
-    virtual ~BDPM3Integrator() {
+    virtual ~BDPM4Integrator() {
         ref<Scheduler> sched = Scheduler::getInstance();
         if (m_globalPhotonMapID)
             sched->unregisterResource(m_globalPhotonMapID);
@@ -269,7 +269,7 @@ public:
 
     std::string toString() const {
         std::ostringstream oss;
-        oss << "BDPM3Integrator[" << endl
+        oss << "BDPM4Integrator[" << endl
             << "  maxDepth = " << m_maxDepth << "," << endl
             << "  rrDepth = " << m_rrDepth << "," << endl
             << "  globalPhotons = " << m_globalPhotons << "," << endl
@@ -305,6 +305,6 @@ private:
     ProbRec pathProb, invPdf;
 };
 
-MTS_IMPLEMENT_CLASS_S(BDPM3Integrator, false, SamplingIntegrator)
-MTS_EXPORT_PLUGIN(BDPM3Integrator, "Photon map integrator");
+MTS_IMPLEMENT_CLASS_S(BDPM4Integrator, false, SamplingIntegrator)
+MTS_EXPORT_PLUGIN(BDPM4Integrator, "Photon map integrator");
 MTS_NAMESPACE_END

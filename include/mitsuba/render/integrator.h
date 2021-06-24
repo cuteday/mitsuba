@@ -306,6 +306,13 @@ public:
      * is dependent on the particular integrator implementation. (*)
      */
     int extra;
+
+    /** [cuteday] modified for bdpm again!
+     * The probability record on camera path.
+     */
+    ProbRec pathProb = {1.0};
+    ProbRec invPdf;
+    Float prob = 1.0;
 };
 
 /** \brief Abstract base class, which describes integrators

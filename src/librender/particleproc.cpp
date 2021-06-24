@@ -228,9 +228,9 @@ void ParticleTracer::process(const WorkUnit *workUnit, WorkResult *workResult,
                 // the bsdfSamplingRecord for bsdfPdf and invBsdfPdf
                 // using square to cosine hemisquare 
                 BSDFSamplingRecord bRec(its, m_sampler, EImportance);
-                BSDFSamplingRecord bInvRec(its, bRec.wo, its.wi);
-
                 Spectrum bsdfWeight = bsdf->sample(bRec, m_sampler->next2D());
+                BSDFSamplingRecord bInvRec(its, bRec.wo, bRec.wi);
+
                 if (bsdfWeight.isZero())
                     break;
 
