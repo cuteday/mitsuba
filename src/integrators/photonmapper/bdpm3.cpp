@@ -230,7 +230,7 @@ public:
                 //     m_globalLookupSize) * bsdf->getDiffuseReflectance(its) * INV_PI;
                 
                 LiSurf += m_globalPhotonMap->estimateRadianceBDPM(its, m_globalLookupRadius, m_globalLookupSize,
-                    maxDepth, rRec.pathProb, rRec.invPdf);
+                    maxDepth, rRec.pathProb, rRec.invPdf, m_rrDepth, 0.8f);
             }
         }
 

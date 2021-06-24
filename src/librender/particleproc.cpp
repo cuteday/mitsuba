@@ -288,7 +288,8 @@ void ParticleTracer::process(const WorkUnit *workUnit, WorkResult *workResult,
                    Stop with at least some probability to avoid
                    getting stuck (e.g. due to total internal reflection) */
 
-                Float q = std::min(throughput.max(), (Float) 0.95f);
+                // Float q = std::min(throughput.max(), (Float) 0.95f);
+                Float q = 0.8f;     // [changed]!
                 if (m_sampler->next1D() >= q)
                     break;
                 throughput /= q;

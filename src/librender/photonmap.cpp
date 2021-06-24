@@ -194,7 +194,8 @@ size_t PhotonMap::estimateRadianceRaw(const Intersection &its,
 
 Spectrum PhotonMap::estimateRadianceBDPM(const Intersection &its, 
         Float searchRadius, int maxPhotons, int maxDepth,
-        ProbRec &pathProb, ProbRec &invPathPdf) const {
+        ProbRec &pathProb, ProbRec &invPathPdf,
+        Float rrDepth, Float rrProb) const {
 
     SearchResult *results = static_cast<SearchResult *>(
         alloca((maxPhotons+1) * sizeof(SearchResult)));
@@ -236,36 +237,50 @@ Spectrum PhotonMap::estimateRadianceBDPM(const Intersection &its,
 
         int t = cameraProb.size(), s = photonProb.size();
         Float pE = pE_t, pL = pL_s, rem;
+        if (s > rrDepth)
+            pL /= pow(rrProb, s - rrDepth);
+        if (t > rrDepth)
+            pE /= pow(rrProb, t - rrDepth);
 
-        // [cuteday] examine all paths, the two endpoints are not considered yet...
+        // examine all paths, the two endpoints are not considered yet...
         // [1] tracing back along camera path...
         for (int i = t - 1; i >= 0; i--){
-            if (i == t-1)
+            int photonDepth = s + t - i, cameraDepth = i;
+            if (i == t - 1)
                 pL *= pL_s1;
             else pL *= invCameraPdf[i];
+            if (photonDepth > rrDepth) // russian roulette at each bounce
+                pL /= rrProb;
             if (i == 0) {
                 continue;
                 //rem = 1.0f;
             } else {
                 rem = cameraProb[i - 1];
             }
+            if(cameraDepth > rrDepth)
+                rem /= pow(rrProb, cameraDepth - rrDepth);
             denominator += pL * rem;
         }
         // [2] tracing back along photon path...
         for (int i = s - 1; i >= 0; i--){
-            if (i == s-1)
+            int cameraDepth = t + s - i, photonDepth = i;
+            if (i == s - 1)
                 pE *= pE_t1;
             else pE *= invPhotonPdf[i];
+            if (cameraDepth > rrDepth) // russian roulette at each bounce
+                pE /= rrProb;
             if (i==0){
                 continue;
                 //rem = 1.0f;
             }else{
                 rem = photonProb[i - 1];
             }
+            if (photonDepth > rrDepth)
+                rem /= pow(rrProb, photonDepth - rrDepth);
             denominator += pE * rem;
         }
 
-        weightMIS = pE_t * pL_s / denominator;
+        //weightMIS = pE_t * pL_s / denominator;
         Log(EDebug, "MIS weight for current photon: %f", weightMIS);
 
         /* [END] The MIS weight calculation... */

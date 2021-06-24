@@ -134,7 +134,8 @@ public:
      */
     Spectrum estimateRadianceBDPM(const Intersection &its, 
         Float searchRadius, int maxPhotons, int maxDepth,
-        ProbRec &pathProb, ProbRec &invPathPdf) const;
+        ProbRec &pathProb, ProbRec &invPathPdf,
+        Float rrDepth = 5, Float rrProb = 0.8f) const;
 
     /// Perform a nearest-neighbor query, see \ref PointKDTree for details
     inline size_t nnSearch(const Point &p, Float &sqrSearchRadius,
