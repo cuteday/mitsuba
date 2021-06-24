@@ -192,5 +192,92 @@ size_t PhotonMap::estimateRadianceRaw(const Intersection &its,
     return count;
 }
 
+Spectrum PhotonMap::estimateRadianceBDPM(const Intersection &its, 
+        Float searchRadius, int maxPhotons, int maxDepth,
+        ProbRec &pathProb, ProbRec &invPathPdf) const {
+
+    SearchResult *results = static_cast<SearchResult *>(
+        alloca((maxPhotons+1) * sizeof(SearchResult)));
+    Float squaredRadius = searchRadius*searchRadius;
+    size_t resultCount = nnSearch(its.p, squaredRadius, maxPhotons, results);
+    Float invSquaredRadius = 1.0f / squaredRadius;
+
+    /* Sum over all contributions */
+    Spectrum result(0.0f);
+    const BSDF *bsdf = its.getBSDF();
+    for (size_t i=0; i<resultCount; i++) {
+        /* currently it uses a simpson filter: w(d) = [(R-d)/R]^2 */
+        const SearchResult &searchResult = results[i];
+        const Photon &photon = m_kdtree[searchResult.index];
+        Float sqrTerm = 1.0f - searchResult.distSquared*invSquaredRadius;
+
+        Vector wi = its.toLocal(-photon.getDirection());
+
+        // cuteday once here
+        /* [BEGIN] The MIS weight calculation... */
+        Float weightMIS = 1.0f;
+        // s-1 -> s -> s+1
+        BSDFSamplingRecord bRec(its, wi, its.wi, EImportance);
+        // t-1 -> t -> t+1
+        BSDFSamplingRecord bInvRec(its, its.wi, wi, EImportance);
+
+        unsigned int bsdfType = bsdf->getType() & BSDF::EAll;
+
+        const ProbRec &cameraProb = pathProb;
+        const ProbRec &invCameraPdf = invPathPdf;
+        const ProbRec &photonProb = photon.data.pathProb;
+        const ProbRec &invPhotonPdf = photon.data.invPdf;
+
+        Float pE_t = cameraProb.back(), pL_s = photonProb.back();
+        Float denominator = pE_t * pL_s;
+
+        Float pL_s1 = bsdf->pdf(bRec, bsdfType & BSDF::EDelta? EDiscrete : ESolidAngle);
+        Float pE_t1 = bsdf->pdf(bInvRec, bsdfType & BSDF::EDelta? EDiscrete : ESolidAngle);
+
+        int t = cameraProb.size(), s = photonProb.size();
+        Float pE = pE_t, pL = pL_s, rem;
+
+        // [cuteday] examine all paths, the two endpoints are not considered yet...
+        // [1] tracing back along camera path...
+        for (int i = t - 1; i >= 0; i--){
+            if (i == t-1)
+                pL *= pL_s1;
+            else pL *= invCameraPdf[i];
+            if (i == 0) {
+                continue;
+                //rem = 1.0f;
+            } else {
+                rem = cameraProb[i - 1];
+            }
+            denominator += pL * rem;
+        }
+        // [2] tracing back along photon path...
+        for (int i = s - 1; i >= 0; i--){
+            if (i == s-1)
+                pE *= pE_t1;
+            else pE *= invPhotonPdf[i];
+            if (i==0){
+                continue;
+                //rem = 1.0f;
+            }else{
+                rem = photonProb[i - 1];
+            }
+            denominator += pE * rem;
+        }
+
+        weightMIS = pE_t * pL_s / denominator;
+        Log(EDebug, "MIS weight for current photon: %f", weightMIS);
+
+        /* [END] The MIS weight calculation... */
+
+        result += weightMIS * photon.getPower() * bsdf->eval(bRec) * (sqrTerm*sqrTerm);
+    }
+
+    /* Based on the assumption that the surface is locally flat,
+       the estimate is divided by the area of a disc corresponding to
+       the projected spherical search region */
+    return result * (m_scale * 3 * INV_PI * invSquaredRadius);
+}
+
 MTS_IMPLEMENT_CLASS_S(PhotonMap, false, SerializableObject)
 MTS_NAMESPACE_END

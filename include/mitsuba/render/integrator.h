@@ -312,7 +312,8 @@ public:
      */
     ProbRec pathProb = {1.0};
     ProbRec invPdf;
-    Float prob = 1.0;
+    int diffuseBounce = 0;
+    int glossyBounce = 0;
 };
 
 /** \brief Abstract base class, which describes integrators

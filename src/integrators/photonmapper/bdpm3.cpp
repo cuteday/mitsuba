@@ -110,7 +110,9 @@ public:
             samplers[i]->decRef();
 
         const ref_vector<Medium> &media = scene->getMedia();
+
         for (ref_vector<Medium>::const_iterator it = media.begin(); it != media.end(); ++it) {
+            Log(EWarn, "An media found!");
             if (!(*it)->isHomogeneous())
                 Log(EError, "Inhomogeneous media are currently not supported by the photon mapper!");
         }
@@ -149,9 +151,7 @@ public:
         
         /* Adapt to scene extents */
         m_globalLookupRadius = m_globalLookupRadiusRel * scene->getBSphere().radius;
-
         sched->unregisterResource(qmcSamplerID);
-
         return true;
     }
 
@@ -195,8 +195,6 @@ public:
         Intersection &its = rRec.its;
         const Scene *scene = rRec.scene;
 
-        bool cacheQuery = (rRec.extra & RadianceQueryRecord::ECacheQuery);
-
         /* Perform the first ray intersection (or ignore if the intersection has already been provided). */
         rRec.rayIntersect(ray);
 
@@ -220,50 +218,71 @@ public:
         unsigned int bsdfType = bsdf->getType() & BSDF::EAll;
 
         /* Irradiance cache query -> treat as diffuse */
-        bool isDiffuse = (bsdfType == BSDF::EDiffuseReflection) || cacheQuery;
-
-        if (isDiffuse && (dot(its.shFrame.n, ray.d) < 0 || (bsdf->getType() & BSDF::EBackSide))) {
+        //bool isDiffuse = (bsdfType == BSDF::EDiffuseReflection) || cacheQuery;
+        //if (isDiffuse && (dot(its.shFrame.n, ray.d) < 0 || (bsdf->getType() & BSDF::EBackSide))) {
+        if (bsdfType & BSDF::ESmooth){
             /* Estimate radiance using photon map on diffuse surfaces */
             int maxDepth = m_maxDepth == -1 ? INT_MAX : (m_maxDepth-rRec.depth);
-            if (rRec.type & RadianceQueryRecord::EIndirectSurfaceRadiance && m_globalPhotonMap.get())
-                LiSurf += m_globalPhotonMap->estimateIrradiance(its.p,
-                    its.shFrame.n, m_globalLookupRadius, maxDepth,
-                    m_globalLookupSize) * bsdf->getDiffuseReflectance(its) * INV_PI;
+            if (rRec.type & RadianceQueryRecord::EIndirectSurfaceRadiance && m_globalPhotonMap.get()){
+                /* diffuse bsdf => (Spectrum)diffCol * INV_PI */
+                // LiSurf += m_globalPhotonMap->estimateIrradiance(its.p,
+                //     its.shFrame.n, m_globalLookupRadius, maxDepth,
+                //     m_globalLookupSize) * bsdf->getDiffuseReflectance(its) * INV_PI;
+                
+                LiSurf += m_globalPhotonMap->estimateRadianceBDPM(its, m_globalLookupRadius, m_globalLookupSize,
+                    maxDepth, rRec.pathProb, rRec.invPdf);
+            }
         }
 
-        /*                            BSDF sampling                             */
-
-        Point2 sample = rRec.nextSample2D();
-
-        RadianceQueryRecord rRec2;
-
-        /* Sample BSDF * cos(theta) */
-        BSDFSamplingRecord bRec(its, rRec.sampler, ERadiance);
-
-        Spectrum bsdfVal = bsdf->sample(bRec, sample);
-        BSDFSamplingRecord bInvRec(its, bRec.wo, bRec.wi);
-        Float bsdfPdf, invBsdfPdf;
-
-        bsdfPdf = bsdf->pdf(bRec, bRec.sampledType ==BSDF::EDeltaReflection ? EDiscrete : ESolidAngle);
-        invBsdfPdf = bsdf->pdf(bInvRec, bRec.sampledType == BSDF::EDeltaReflection ? EDiscrete : ESolidAngle);
-
-        if (bsdfVal.isZero())
+        Float judgeRR = rRec.nextSample1D();
+        Float probRR = rRec.depth > m_rrDepth ? 0.8f : 1.0f;
+        if(judgeRR > probRR){
             return LiSurf;
+        }
 
-        /* Trace a ray in this direction, but leave computing intersection to next recurse... */
-        RayDifferential bsdfRay(its.p, its.toWorld(bRec.wo), ray.time);
+        // if (bsdfType & BSDF::EDelta)
+        // {
+            int compCount = bsdf->getComponentCount();
+            for (int i = 0; i < compCount;i++){
+                bsdfType = bsdf->getType(i);
+                if (!(bsdfType & BSDF::EDelta))
+                    continue;
+                /*               BSDF sampling               */
+                Point2 sample = rRec.nextSample2D();
+                RadianceQueryRecord rRec2;
 
-        rRec2.recursiveQuery(rRec, RadianceQueryRecord::ERadiance);
+                /* Sample BSDF * cos(theta) */
+                BSDFSamplingRecord bRec(its, rRec.sampler, ERadiance);
 
-        // [for bdpm]
-        rRec2.prob = rRec.prob * bsdfPdf;
-        rRec2.pathProb = rRec.pathProb;
-        rRec2.pathProb.push_back(rRec2.prob);
-        rRec2.invPdf = rRec.invPdf;
-        rRec2.invPdf.push_back(invBsdfPdf);
+                bRec.component = i;
 
-        LiSurf += bsdfVal * m_parentIntegrator->Li(bsdfRay, rRec2);
+                Spectrum bsdfVal = bsdf->sample(bRec, sample);
+                /* Throughput *= f_r * cos_theta / ( PDF_bsdf * PDF_rr ) */
+                BSDFSamplingRecord bInvRec(its, bRec.wo, bRec.wi);
+                bInvRec.component = i;
 
+                Float bsdfPdf, invBsdfPdf;
+                bsdfPdf = bsdf->pdf(bRec, bRec.sampledType == BSDF::EDeltaReflection ? EDiscrete : ESolidAngle);
+                invBsdfPdf = bsdf->pdf(bInvRec, bRec.sampledType == BSDF::EDeltaReflection ? EDiscrete : ESolidAngle);
+
+                if (bsdfVal.isZero())
+                    return LiSurf;
+                /* Trace a ray in this direction, but leave computing intersection to next recurse... */
+                RayDifferential bsdfRay(its.p, its.toWorld(bRec.wo), ray.time);
+                rRec2.recursiveQuery(rRec, RadianceQueryRecord::ERadiance);
+
+                // [for bdpm] recursively added path prob records
+                rRec2.pathProb = rRec.pathProb;
+                rRec2.pathProb.push_back(rRec.pathProb.back() * bsdfPdf);
+                rRec2.invPdf = rRec.invPdf;
+                rRec2.invPdf.push_back(invBsdfPdf);
+                if (bsdfType & BSDF::EDelta)
+                    rRec2.glossyBounce++;
+                else rRec2.diffuseBounce++;
+
+                LiSurf += bsdfVal / probRR * m_parentIntegrator->Li(bsdfRay, rRec2);
+            }
+        //}
         return LiSurf;
     }
 
@@ -300,9 +319,6 @@ private:
     int m_rrDepth, m_maxDepth;
     bool m_gatherLocally, m_autoCancelGathering;
     bool m_hideEmitters;
-    /* for bdpm */
-
-    ProbRec pathProb, invPdf;
 };
 
 MTS_IMPLEMENT_CLASS_S(BDPM3Integrator, false, SamplingIntegrator)

@@ -155,7 +155,7 @@ void ParticleTracer::process(const WorkUnit *workUnit, WorkResult *workResult,
             Float P0 = m_scene->pdfEmitterPosition(pRec) * emitter->pdfDirection(dRec, pRec);
             // P0 = pRec.pdf * dRec.pdf;    // (equivalent...)
             prob = P0;
-            Log(EDebug, "current emitter sampling: P^E_1 = %f", P0);
+            //Log(EDebug, "current emitter sampling: P^E_1 = %f", P0);
         
         } else {
             /* Sample both components together, which is potentially
@@ -296,8 +296,8 @@ void ParticleTracer::process(const WorkUnit *workUnit, WorkResult *workResult,
             }
             // [for bdpm] finally [4]...
             prob *= bsdfPdf;
-            Log(EDebug, "current bsdf prob: %f", bsdfPdf);
-            Log(EDebug, "current inverse bsdf prob: %f", invBsdfPdf);
+            //Log(EDebug, "current bsdf prob: %f", bsdfPdf);
+            //Log(EDebug, "current inverse bsdf prob: %f", invBsdfPdf);
             pathProb.push_back(prob);
             invPdf.push_back(invBsdfPdf);
         }

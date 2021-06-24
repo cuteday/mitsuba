@@ -129,6 +129,13 @@ public:
     size_t estimateRadianceRaw(const Intersection &its,
         Float searchRadius, Spectrum &result, int maxDepth) const;
 
+    /**
+     * BDPM radiance estimate with balanced heuristic.
+     */
+    Spectrum estimateRadianceBDPM(const Intersection &its, 
+        Float searchRadius, int maxPhotons, int maxDepth,
+        ProbRec &pathProb, ProbRec &invPathPdf) const;
+
     /// Perform a nearest-neighbor query, see \ref PointKDTree for details
     inline size_t nnSearch(const Point &p, Float &sqrSearchRadius,
         size_t k, SearchResult *results) const {

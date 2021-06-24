@@ -256,9 +256,8 @@ public:
         rRec2.recursiveQuery(rRec, RadianceQueryRecord::ERadiance);
 
         // [for bdpm]
-        rRec2.prob = rRec.prob * bsdfPdf;
         rRec2.pathProb = rRec.pathProb;
-        rRec2.pathProb.push_back(rRec2.prob);
+        rRec2.pathProb.push_back(rRec.pathProb.back() * bsdfPdf);
         rRec2.invPdf = rRec.invPdf;
         rRec2.invPdf.push_back(invBsdfPdf);
 
