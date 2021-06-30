@@ -1,167 +1,103 @@
-/*
-    This file is part of Mitsuba, a physically based rendering system.
-
-    Copyright (c) 2007-2014 by Wenzel Jakob and others.
-
-    Mitsuba is free software; you can redistribute it and/or modify
-    it under the terms of the GNU General Public License Version 3
-    as published by the Free Software Foundation.
-
-    Mitsuba is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-    GNU General Public License for more details.
-
-    You should have received a copy of the GNU General Public License
-    along with this program. If not, see <http://www.gnu.org/licenses/>.
-*/
+/* BDPM modified on PM */
 
 #include <mitsuba/core/plugin.h>
-#include <mitsuba/core/bitmap.h>
+#include <mitsuba/render/common.h>
 #include <mitsuba/render/gatherproc.h>
-#include <mitsuba/render/renderqueue.h>
-
-#if defined(MTS_OPENMP)
-# include <omp.h>
-#endif
+#include "bre.h"
 
 MTS_NAMESPACE_BEGIN
 
-/*!\plugin{sppm}{Stochastic progressive photon mapping integrator}
- * \order{8}
- * \parameters{
- *     \parameter{maxDepth}{\Integer}{Specifies the longest path depth
- *         in the generated output image (where \code{-1} corresponds to $\infty$).
- *         A value of \code{1} will only render directly visible light sources.
- *         \code{2} will lead to single-bounce (direct-only) illumination,
- *         and so on. \default{\code{-1}}
- *     }
- *     \parameter{photonCount}{\Integer}{Number of photons to be shot per iteration\default{250000}}
- *     \parameter{initialRadius}{\Float}{Initial radius of gather points in world space units.
- *         \default{0, i.e. decide automatically}}
- *     \parameter{alpha}{\Float}{Radius reduction parameter \code{alpha} from the paper\default{0.7}}
- *     \parameter{granularity}{\Integer}{
-        Granularity of photon tracing work units for the purpose
-        of parallelization (in \# of shot particles) \default{0, i.e. decide automatically}
- *     }
- *     \parameter{rrDepth}{\Integer}{Specifies the minimum path depth, after
- *        which the implementation will start to use the ``russian roulette''
- *        path termination criterion. \default{\code{5}}
- *     }
- *     \parameter{maxPasses}{\Integer}{Maximum number of passes to render (where \code{-1}
- *        corresponds to rendering until stopped manually). \default{\code{-1}}}
- * }
- */
-class BDPMIntegrator : public Integrator {
+class BDPM3Integrator : public SamplingIntegrator {
 public:
-    /// Represents one individual PPM gather point including relevant statistics
-    struct GatherPoint {
-        Intersection its;
-        Float radius;
-        Spectrum weight;
-        Spectrum flux;
-        Spectrum emission;
-        Float N;
-        int depth;
-        Point2i pos;
-
-        inline GatherPoint() : weight(0.0f), flux(0.0f), emission(0.0f), N(0.0f) { }
-    };
-
-    BDPMIntegrator(const Properties &props) : Integrator(props) {
-        /* Initial photon query radius (0 = infer based on scene size and sensor resolution) */
-        m_initialRadius = props.getFloat("initialRadius", 0);
-        /* Alpha parameter from the paper (influences the speed, at which the photon radius is reduced) */
-        m_alpha = props.getFloat("alpha", .7);
-        /* Number of photons to shoot in each iteration */
-        m_photonCount = props.getInteger("photonCount", 250000);
-        /* Granularity of the work units used in parallelizing the
-           particle tracing task (default: choose automatically). */
-        m_granularity = props.getInteger("granularity", 0);
-        /* Longest visualized path length (<tt>-1</tt>=infinite). When a positive value is
-           specified, it must be greater or equal to <tt>2</tt>, which corresponds to single-bounce
-           (direct-only) illumination */
+    BDPM3Integrator(const Properties &props) : SamplingIntegrator(props),
+          m_parentIntegrator(NULL) {
+        /* Depth to start using russian roulette when tracing photons */
+        m_rrDepth = props.getInteger("rrDepth", 5);
+        /* Longest visualized path length (\c -1 = infinite).
+           A value of \c 1 will visualize only directly visible light sources.
+           \c 2 will lead to single-bounce (direct-only) illumination, and so on. */
         m_maxDepth = props.getInteger("maxDepth", -1);
-        /* Depth to start using russian roulette */
-        m_rrDepth = props.getInteger("rrDepth", 3);
+        /* Granularity of photon tracing work units (in shot particles, 0 => decide automatically) */
+        m_granularity = props.getInteger("granularity", 0);
+        /* Number of photons to collect for the global photon map */
+        m_globalPhotons = props.getSize("globalPhotons", 250000);
+        /* Max. radius of lookups in the global photon map (relative to the scene size) */
+        m_globalLookupRadiusRel = props.getFloat("globalLookupRadius", 0.05f);
+        /* Minimum amount of photons to consider a photon map lookup valid */
+        int lookupSize = props.getInteger("lookupSize", 120);
+        /* Minimum amount of photons to consider a volumetric photon map lookup valid */
+        m_globalLookupSize = props.getInteger("globalLookupSize", lookupSize);
+        /* Should photon gathering steps exclusively run on the local machine? */
+        m_gatherLocally = props.getBoolean("gatherLocally", true);
         /* Indicates if the gathering steps should be canceled if not enough photons are generated. */
         m_autoCancelGathering = props.getBoolean("autoCancelGathering", true);
-        /* Maximum number of passes to render. -1 renders until the process is stopped. */
-        m_maxPasses = props.getInteger("maxPasses", -1);
-        m_mutex = new Mutex();
-        if (m_maxDepth <= 1 && m_maxDepth != -1)
-            Log(EError, "Maximum depth must be set to \"2\" or higher!");
-        if (m_maxPasses <= 0 && m_maxPasses != -1)
-            Log(EError, "Maximum number of Passes must either be set to \"-1\" or \"1\" or higher!");
+        /* When this flag is set to true, contributions from directly
+         * visible emitters will not be included in the rendered image */
+        m_hideEmitters = props.getBoolean("hideEmitters", false);
+
+        if (m_maxDepth == 0) {
+            Log(EError, "maxDepth must be greater than zero!");
+        } else if (m_maxDepth == -1) {
+            /**
+             * An infinite depth is currently not supported, since
+             * the photon tracing step uses a Halton sequence
+             * that is based on a finite-sized prime number table
+             */
+            m_maxDepth = 128;
+        }
+
+        m_globalPhotonMapID = m_breID = 0;
     }
 
-    BDPMIntegrator(Stream *stream, InstanceManager *manager)
-     : Integrator(stream, manager) { }
+    /// Unserialize from a binary data stream
+    BDPM3Integrator(Stream *stream, InstanceManager *manager)
+     : SamplingIntegrator(stream, manager), m_parentIntegrator(NULL) {
+        m_maxDepth = stream->readInt();
+        m_rrDepth = stream->readInt();
+        m_globalPhotons = stream->readSize();
+        m_globalLookupRadius = stream->readFloat();
+        m_globalLookupSize = stream->readInt();
+        m_gatherLocally = stream->readBool();
+        m_autoCancelGathering = stream->readBool();
+        m_hideEmitters = stream->readBool();
+        m_globalPhotonMapID = m_breID = 0;
+        configure();
+    }
+
+    virtual ~BDPM3Integrator() {
+        ref<Scheduler> sched = Scheduler::getInstance();
+        if (m_globalPhotonMapID)
+            sched->unregisterResource(m_globalPhotonMapID);
+        if (m_breID)
+            sched->unregisterResource(m_breID);
+    }
 
     void serialize(Stream *stream, InstanceManager *manager) const {
-        Integrator::serialize(stream, manager);
-        Log(EError, "Network rendering is not supported!");
+        SamplingIntegrator::serialize(stream, manager);
+        stream->writeInt(m_maxDepth);
+        stream->writeInt(m_rrDepth);
+        stream->writeSize(m_globalPhotons);
+        stream->writeFloat(m_globalLookupRadius);
+        stream->writeInt(m_globalLookupSize);
+        stream->writeBool(m_gatherLocally);
+        stream->writeBool(m_autoCancelGathering);
+        stream->writeBool(m_hideEmitters);
     }
 
-    void cancel() {
-        m_running = false;
+    /// Configure the sampler for a specified amount of direct illumination samples
+    void configureSampler(const Scene *scene, Sampler *sampler) {
+        SamplingIntegrator::configureSampler(scene, sampler);
     }
 
+    void configure() {}
 
     bool preprocess(const Scene *scene, RenderQueue *queue, const RenderJob *job,
             int sceneResID, int sensorResID, int samplerResID) {
-        Integrator::preprocess(scene, queue, job, sceneResID, sensorResID, samplerResID);
-
-        if (m_initialRadius == 0) {
-            /* Guess an initial radius if not provided
-              (use scene width / horizontal or vertical pixel count) * 5 */
-            Float rad = scene->getBSphere().radius;
-            Vector2i filmSize = scene->getSensor()->getFilm()->getSize();
-
-            m_initialRadius = std::min(rad / filmSize.x, rad / filmSize.y) * 5;
-        }
-        return true;
-    }
-
-    bool render(Scene *scene, RenderQueue *queue,
-        const RenderJob *job, int sceneResID, int sensorResID, int unused) {
+        SamplingIntegrator::preprocess(scene, queue, job, sceneResID, sensorResID, samplerResID);
+        /* Create a deterministic sampler for the photon gathering step */
         ref<Scheduler> sched = Scheduler::getInstance();
-        ref<Sensor> sensor = scene->getSensor();
-        ref<Film> film = sensor->getFilm();
-        size_t nCores = sched->getCoreCount();
-        Log(EInfo, "Starting render job (%ix%i, " SIZE_T_FMT " %s, " SSE_STR ") ..",
-            film->getCropSize().x, film->getCropSize().y,
-            nCores, nCores == 1 ? "core" : "cores");
-
-        Vector2i cropSize = film->getCropSize();
-        Point2i cropOffset = film->getCropOffset();
-
-        m_gatherBlocks.clear();
-        m_running = true;
-        m_totalEmitted = 0;
-        m_totalPhotons = 0;
-
         ref<Sampler> sampler = static_cast<Sampler *> (PluginManager::getInstance()->
-            createObject(MTS_CLASS(Sampler), Properties("independent")));
-
-        int blockSize = scene->getBlockSize();
-
-        /* Allocate memory */
-        m_bitmap = new Bitmap(Bitmap::ESpectrum, Bitmap::EFloat, film->getSize());
-        m_bitmap->clear();
-        for (int yofs=0; yofs<cropSize.y; yofs += blockSize) {
-            for (int xofs=0; xofs<cropSize.x; xofs += blockSize) {
-                m_gatherBlocks.push_back(std::vector<GatherPoint>());
-                m_offset.push_back(Point2i(cropOffset.x + xofs, cropOffset.y + yofs));
-                std::vector<GatherPoint> &gatherPoints = m_gatherBlocks[m_gatherBlocks.size()-1];
-                int nPixels = std::min(blockSize, cropSize.y-yofs)
-                            * std::min(blockSize, cropSize.x-xofs);
-                gatherPoints.resize(nPixels);
-                for (int i=0; i<nPixels; ++i)
-                    gatherPoints[i].radius = m_initialRadius;
-            }
-        }
-
+            createObject(MTS_CLASS(Sampler), Properties("halton")));
         /* Create a sampler instance for every core */
         std::vector<SerializableObject *> samplers(sched->getCoreCount());
         for (size_t i=0; i<sched->getCoreCount(); ++i) {
@@ -169,233 +105,222 @@ public:
             clonedSampler->incRef();
             samplers[i] = clonedSampler.get();
         }
-
-        int samplerResID = sched->registerMultiResource(samplers);
-
-#ifdef MTS_DEBUG_FP
-        enableFPExceptions();
-#endif
-
-#if defined(MTS_OPENMP)
-        Thread::initializeOpenMP(nCores);
-#endif
-
-        int it = 0;
-        while (m_running && (m_maxPasses == -1 || it < m_maxPasses)) {
-            distributedRTPass(scene, samplers);
-            photonMapPass(++it, queue, job, film, sceneResID,
-                    sensorResID, samplerResID);
-        }
-
-#ifdef MTS_DEBUG_FP
-        disableFPExceptions();
-#endif
-
+        int qmcSamplerID = sched->registerMultiResource(samplers);
         for (size_t i=0; i<samplers.size(); ++i)
             samplers[i]->decRef();
 
-        sched->unregisterResource(samplerResID);
+        const ref_vector<Medium> &media = scene->getMedia();
+
+        for (ref_vector<Medium>::const_iterator it = media.begin(); it != media.end(); ++it) {
+            Log(EWarn, "An media found!");
+            if (!(*it)->isHomogeneous())
+                Log(EError, "Inhomogeneous media are currently not supported by the photon mapper!");
+        }
+
+        if (m_globalPhotonMap.get() == NULL && m_globalPhotons > 0) {
+            /* Generate the global photon map */
+            ref<GatherPhotonProcess> proc = new GatherPhotonProcess(
+                GatherPhotonProcess::EAllSurfacePhotons, m_globalPhotons,
+                m_granularity, m_maxDepth-1, m_rrDepth, m_gatherLocally,
+                m_autoCancelGathering, job);
+
+            proc->bindResource("scene", sceneResID);
+            proc->bindResource("sensor", sensorResID);
+            proc->bindResource("sampler", qmcSamplerID);
+
+            m_proc = proc;
+            sched->schedule(proc);
+            sched->wait(proc);
+            m_proc = NULL;
+
+            if (proc->getReturnStatus() != ParallelProcess::ESuccess)
+                return false;
+
+            ref<PhotonMap> globalPhotonMap = proc->getPhotonMap();
+            if (globalPhotonMap->isFull()) {
+                Log(EDebug, "Global photon map full. Shot " SIZE_T_FMT " particles, excess photons due to parallelism: "
+                    SIZE_T_FMT, proc->getShotParticles(), proc->getExcessPhotons());
+
+                m_globalPhotonMap = globalPhotonMap;
+                m_globalPhotonMap->setScaleFactor(1 / (Float) proc->getShotParticles());
+                m_globalPhotonMap->build();
+                m_globalPhotonMapID = sched->registerResource(m_globalPhotonMap);
+            }
+        }
+
+        
+        /* Adapt to scene extents */
+        m_globalLookupRadius = m_globalLookupRadiusRel * scene->getBSphere().radius;
+        sched->unregisterResource(qmcSamplerID);
         return true;
     }
 
-    void distributedRTPass(Scene *scene, std::vector<SerializableObject *> &samplers) {
-        ref<Sensor> sensor = scene->getSensor();
-        bool needsApertureSample = sensor->needsApertureSample();
-        bool needsTimeSample = sensor->needsTimeSample();
-        ref<Film> film = sensor->getFilm();
-        Vector2i cropSize = film->getCropSize();
-        Point2i cropOffset = film->getCropOffset();
-        int blockSize = scene->getBlockSize();
-
-        /* Process the image in parallel using blocks for better memory locality */
-        Log(EInfo, "Creating %i gather points", cropSize.x*cropSize.y);
-        #if defined(MTS_OPENMP)
-            #pragma omp parallel for schedule(dynamic)
-        #endif
-        for (int i=0; i<(int) m_gatherBlocks.size(); ++i) {
-            std::vector<GatherPoint> &gatherPoints = m_gatherBlocks[i];
-            #if defined(MTS_OPENMP)
-                Sampler *sampler = static_cast<Sampler *>(samplers[mts_omp_get_thread_num()]);
-            #else
-                Sampler *sampler = static_cast<Sampler *>(samplers[0]);
-            #endif
-
-            int xofs = m_offset[i].x, yofs = m_offset[i].y;
-            int index = 0;
-            for (int yofsInt = 0; yofsInt < blockSize; ++yofsInt) {
-                if (yofsInt + yofs - cropOffset.y >= cropSize.y)
-                    continue;
-                for (int xofsInt = 0; xofsInt < blockSize; ++xofsInt) {
-                    if (xofsInt + xofs - cropOffset.x >= cropSize.x)
-                        continue;
-					/* cuteday: Generate one gather point for each pixel at most
-						(No gather point when no intersections is found on diffuse materials)
-					*/
-
-					Point2 apertureSample, sample;
-                    Float timeSample = 0.0f;
-                    GatherPoint &gatherPoint = gatherPoints[index++];
-                    gatherPoint.pos = Point2i(xofs + xofsInt, yofs + yofsInt);
-                    sampler->generate(gatherPoint.pos);
-                    if (needsApertureSample)
-                        apertureSample = sampler->next2D();
-                    if (needsTimeSample)
-                        timeSample = sampler->next1D();
-                    sample = sampler->next2D();
-                    sample += Vector2((Float) gatherPoint.pos.x, (Float) gatherPoint.pos.y);
-                    RayDifferential ray;
-                    sensor->sampleRayDifferential(ray, sample, apertureSample, timeSample);
-                    Spectrum weight(1.0f);
-                    int depth = 1;
-                    gatherPoint.emission = Spectrum(0.0f);
-
-                    while (true) {
-                        if (scene->rayIntersect(ray, gatherPoint.its)) {
-                            if (gatherPoint.its.isEmitter())
-                                gatherPoint.emission += weight * gatherPoint.its.Le(-ray.d);
-
-                            if (depth >= m_maxDepth && m_maxDepth != -1) {
-                                gatherPoint.depth = -1;
-                                break;
-                            }
-
-                            const BSDF *bsdf = gatherPoint.its.getBSDF();
-
-                            /* Create hit point if this is a diffuse material or a glossy
-                               one, and there has been a previous interaction with
-                               a glossy material */
-                            if ((bsdf->getType() & BSDF::EAll) == BSDF::EDiffuseReflection ||
-                                (bsdf->getType() & BSDF::EAll) == BSDF::EDiffuseTransmission ||
-                                (depth + 1 > m_maxDepth && m_maxDepth != -1)) {
-                                gatherPoint.weight = weight;
-                                gatherPoint.depth = depth;
-                                break;
-                            } else {
-                                /* Recurse for dielectric materials and (specific to SPPM):
-                                   recursive "final gathering" for glossy materials */
-                                BSDFSamplingRecord bRec(gatherPoint.its, sampler);
-                                weight *= bsdf->sample(bRec, sampler->next2D());
-                                if (weight.isZero()) {
-                                    gatherPoint.depth = -1;
-                                    break;
-                                }
-                                ray = RayDifferential(gatherPoint.its.p,
-                                    gatherPoint.its.toWorld(bRec.wo), ray.time);
-                                ++depth;
-                            }
-                        } else {
-                            /* Generate an invalid sample */
-                            gatherPoint.depth = -1;
-                            gatherPoint.emission += weight * scene->evalEnvironment(ray);
-                            break;
-                        }
-                    }
-                    sampler->advance();
-                }
-            }
-        }
+    void setParent(ConfigurableObject *parent) {
+        if (parent->getClass()->derivesFrom(MTS_CLASS(SamplingIntegrator)))
+            m_parentIntegrator = static_cast<SamplingIntegrator *>(parent);
+        else
+            m_parentIntegrator = this;
     }
 
-    void photonMapPass(int it, RenderQueue *queue, const RenderJob *job,
-            Film *film, int sceneResID, int sensorResID, int samplerResID) {
-        Log(EInfo, "Performing a photon mapping pass %i (" SIZE_T_FMT " photons so far)",
-                it, m_totalPhotons);
-        ref<Scheduler> sched = Scheduler::getInstance();
+    /// Specify globally shared resources
+    void bindUsedResources(ParallelProcess *proc) const {
+        if (m_globalPhotonMap.get())
+            proc->bindResource("globalPhotonMap", m_globalPhotonMapID);
+        if (m_bre.get())
+            proc->bindResource("bre", m_breID);
+    }
 
-        /* Generate the global photon map */
-        ref<GatherPhotonProcess> proc = new GatherPhotonProcess(
-            GatherPhotonProcess::EAllSurfacePhotons, m_photonCount,
-            m_granularity, m_maxDepth == -1 ? -1 : m_maxDepth-1, m_rrDepth, true,
-            m_autoCancelGathering, job);
+    /// Connect to globally shared resources
+    void wakeup(ConfigurableObject *parent, std::map<std::string, SerializableObject *> &params) {
+        if (!m_globalPhotonMap.get() && params.find("globalPhotonMap") != params.end())
+            m_globalPhotonMap = static_cast<PhotonMap *>(params["globalPhotonMap"]);
+        if (!m_bre.get() && params.find("bre") != params.end())
+            m_bre = static_cast<BeamRadianceEstimator *>(params["bre"]);
+        if (parent && parent->getClass()->derivesFrom(MTS_CLASS(SamplingIntegrator)))
+            m_parentIntegrator = static_cast<SamplingIntegrator *>(parent);
+        else
+            m_parentIntegrator = this;
+    }
 
-        proc->bindResource("scene", sceneResID);
-        proc->bindResource("sensor", sensorResID);
-        proc->bindResource("sampler", samplerResID);
+    void cancel() {
+        SamplingIntegrator::cancel();
+        if (m_proc)
+            Scheduler::getInstance()->cancel(m_proc);
+    }
 
-        sched->schedule(proc);
-        sched->wait(proc);
+    Spectrum Li(const RayDifferential &ray, RadianceQueryRecord &rRec) const {
+        Log(EDebug, "Entering Li depth %d", rRec.depth);
 
-        ref<PhotonMap> photonMap = proc->getPhotonMap();
-        photonMap->build();
-        Log(EDebug, "Photon map full. Shot " SIZE_T_FMT " particles, excess photons due to parallelism: "
-            SIZE_T_FMT, proc->getShotParticles(), proc->getExcessPhotons());
+        Spectrum LiSurf(0.0f);
+        Intersection &its = rRec.its;
+        const Scene *scene = rRec.scene;
 
-        Log(EInfo, "Gathering ..");
-        m_totalEmitted += proc->getShotParticles();
-        m_totalPhotons += photonMap->size();
-        film->clear();
-        #if defined(MTS_OPENMP)
-            #pragma omp parallel for schedule(dynamic)
-        #endif
-        for (int blockIdx = 0; blockIdx<(int) m_gatherBlocks.size(); ++blockIdx) {
-            std::vector<GatherPoint> &gatherPoints = m_gatherBlocks[blockIdx];
+        /* Perform the first ray intersection (or ignore if the intersection has already been provided). */
+        rRec.rayIntersect(ray);
 
-            Spectrum *target = (Spectrum *) m_bitmap->getUInt8Data();
-            for (size_t i=0; i<gatherPoints.size(); ++i) {
-                GatherPoint &gp = gatherPoints[i];
-                Float M, N = gp.N;
-                Spectrum flux, contrib;
+        if (!its.isValid()) {
+            /* If no intersection could be found, possibly return
+               attenuated radiance from a background luminaire */
+            if ((rRec.type & RadianceQueryRecord::EEmittedRadiance) && !m_hideEmitters)
+                LiSurf = scene->evalEnvironment(ray);
+            return LiSurf;
+        }
 
-                if (gp.depth != -1) {
-                    M = (Float) photonMap->estimateRadianceRaw(
-                        gp.its, gp.radius, flux, m_maxDepth == -1 ? INT_MAX : m_maxDepth-gp.depth);
-                } else {
-                    M = 0;
-                    flux = Spectrum(0.0f);
-                }
+        /* Possibly include emitted radiance if requested */
+        if (its.isEmitter() && (rRec.type & RadianceQueryRecord::EEmittedRadiance) && !m_hideEmitters)
+            LiSurf += its.Le(-ray.d);
 
-                if (N == 0 && !gp.emission.isZero())
-                    gp.N = N = 1;
+        const BSDF *bsdf = its.getBSDF(ray);
 
-                if (N+M == 0) {
-                    gp.flux = contrib = Spectrum(0.0f);
-                } else {
-                    Float ratio = (N + m_alpha * M) / (N + M);
-                    gp.radius = gp.radius * std::sqrt(ratio);
+        if (rRec.depth >= m_maxDepth && m_maxDepth > 0)
+            return LiSurf;
 
-                    gp.flux = (gp.flux +
-                            gp.weight * flux +
-                            gp.emission * (Float) proc->getShotParticles() * M_PI * gp.radius*gp.radius) * ratio;
-                    gp.N = N + m_alpha * M;
-                    contrib = gp.flux / ((Float) m_totalEmitted * gp.radius*gp.radius * M_PI);
-                }
+        unsigned int bsdfType = bsdf->getType() & BSDF::EAll;
 
-                target[gp.pos.y * m_bitmap->getWidth() + gp.pos.x] = contrib;
+        /* Irradiance cache query -> treat as diffuse */
+        //bool isDiffuse = (bsdfType == BSDF::EDiffuseReflection) || cacheQuery;
+        //if (isDiffuse && (dot(its.shFrame.n, ray.d) < 0 || (bsdf->getType() & BSDF::EBackSide))) {
+        if (bsdfType & BSDF::ESmooth){
+            /* Estimate radiance using photon map on diffuse surfaces */
+            int maxDepth = m_maxDepth == -1 ? INT_MAX : (m_maxDepth-rRec.depth);
+            if (rRec.type & RadianceQueryRecord::EIndirectSurfaceRadiance && m_globalPhotonMap.get()){
+                /* diffuse bsdf => (Spectrum)diffCol * INV_PI */
+                // LiSurf += m_globalPhotonMap->estimateIrradiance(its.p,
+                //     its.shFrame.n, m_globalLookupRadius, maxDepth,
+                //     m_globalLookupSize) * bsdf->getDiffuseReflectance(its) * INV_PI;
+                
+                LiSurf += m_globalPhotonMap->estimateRadianceBDPM(its, m_globalLookupRadius, m_globalLookupSize,
+                    maxDepth, rRec.pathProb, rRec.invPdf, m_rrDepth, 0.8f);
             }
         }
-        film->setBitmap(m_bitmap);
-        queue->signalRefresh(job);
+
+        Float judgeRR = rRec.nextSample1D();
+        Float probRR = rRec.depth > m_rrDepth ? 0.8f : 1.0f;
+        if(judgeRR > probRR){
+            return LiSurf;
+        }
+
+        // if (bsdfType & BSDF::EDelta)
+        // {
+            int compCount = bsdf->getComponentCount();
+            for (int i = 0; i < compCount;i++){
+                bsdfType = bsdf->getType(i);
+                if (!(bsdfType & BSDF::EDelta))
+                    continue;
+                /*               BSDF sampling               */
+                Point2 sample = rRec.nextSample2D();
+                RadianceQueryRecord rRec2;
+
+                /* Sample BSDF * cos(theta) */
+                BSDFSamplingRecord bRec(its, rRec.sampler, ERadiance);
+
+                bRec.component = i;
+
+                Spectrum bsdfVal = bsdf->sample(bRec, sample);
+                /* Throughput *= f_r * cos_theta / ( PDF_bsdf * PDF_rr ) */
+                BSDFSamplingRecord bInvRec(its, bRec.wo, bRec.wi);
+                bInvRec.component = i;
+
+                Float bsdfPdf, invBsdfPdf;
+                bsdfPdf = bsdf->pdf(bRec, bRec.sampledType == BSDF::EDeltaReflection ? EDiscrete : ESolidAngle);
+                invBsdfPdf = bsdf->pdf(bInvRec, bRec.sampledType == BSDF::EDeltaReflection ? EDiscrete : ESolidAngle);
+
+                if (bsdfVal.isZero())
+                    return LiSurf;
+                /* Trace a ray in this direction, but leave computing intersection to next recurse... */
+                RayDifferential bsdfRay(its.p, its.toWorld(bRec.wo), ray.time);
+                rRec2.recursiveQuery(rRec, RadianceQueryRecord::ERadiance);
+
+                // [for bdpm] recursively added path prob records
+                rRec2.pathProb = rRec.pathProb;
+                rRec2.pathProb.push_back(rRec.pathProb.back() * bsdfPdf);
+                rRec2.invPdf = rRec.invPdf;
+                rRec2.invPdf.push_back(invBsdfPdf);
+                if (bsdfType & BSDF::EDelta)
+                    rRec2.glossyBounce++;
+                else rRec2.diffuseBounce++;
+
+                LiSurf += bsdfVal / probRR * m_parentIntegrator->Li(bsdfRay, rRec2);
+            }
+        //}
+        return LiSurf;
     }
 
     std::string toString() const {
         std::ostringstream oss;
-        oss << "BDPMIntegrator[" << endl
+        oss << "BDPM3Integrator[" << endl
             << "  maxDepth = " << m_maxDepth << "," << endl
             << "  rrDepth = " << m_rrDepth << "," << endl
-            << "  initialRadius = " << m_initialRadius << "," << endl
-            << "  alpha = " << m_alpha << "," << endl
-            << "  photonCount = " << m_photonCount << "," << endl
-            << "  granularity = " << m_granularity << "," << endl
-            << "  maxPasses = " << m_maxPasses << endl
+            << "  globalPhotons = " << m_globalPhotons << "," << endl
+            << "  gatherLocally = " << m_gatherLocally << "," << endl
+            << "  globalLookupRadius = " << m_globalLookupRadius << "," << endl
+            << "  globalLookupSize = " << m_globalLookupSize << "," << endl
             << "]";
         return oss.str();
     }
 
+    /* Power(2) heuristic for multi-importance sampling. */
+    inline Float miWeight(Float pdfA, Float pdfB) const {
+        pdfA *= pdfA; pdfB *= pdfB;
+        return pdfA / (pdfA + pdfB);
+    }
+
     MTS_DECLARE_CLASS()
 private:
-    std::vector<std::vector<GatherPoint> > m_gatherBlocks;
-    std::vector<Point2i> m_offset;
-    ref<Mutex> m_mutex;
-    ref<Bitmap> m_bitmap;
-    Float m_initialRadius, m_alpha;
-    int m_photonCount, m_granularity;
-    int m_maxDepth, m_rrDepth;
-    size_t m_totalEmitted, m_totalPhotons;
-    bool m_running;
-    bool m_autoCancelGathering;
-    int m_maxPasses;
+    ref<PhotonMap> m_globalPhotonMap;
+    ref<BeamRadianceEstimator> m_bre;
+    ref<ParallelProcess> m_proc;
+    SamplingIntegrator *m_parentIntegrator;
+    int m_globalPhotonMapID, m_breID;
+    size_t m_globalPhotons;
+    int m_globalLookupSize;
+    Float m_globalLookupRadiusRel, m_globalLookupRadius;
+    int m_granularity;
+    int m_rrDepth, m_maxDepth;
+    bool m_gatherLocally, m_autoCancelGathering;
+    bool m_hideEmitters;
 };
 
-MTS_IMPLEMENT_CLASS_S(BDPMIntegrator, false, Integrator)
-MTS_EXPORT_PLUGIN(BDPMIntegrator, "Bidirectional photon mapper");
+MTS_IMPLEMENT_CLASS_S(BDPM3Integrator, false, SamplingIntegrator)
+MTS_EXPORT_PLUGIN(BDPM3Integrator, "Photon map integrator");
 MTS_NAMESPACE_END
