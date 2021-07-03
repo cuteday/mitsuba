@@ -221,6 +221,11 @@ public:
         depth = 1;
         extra = 0;
         alpha = 1;
+        diffuseBounce = 0;
+        glossyBounce = 0;
+        pathProb.clear();
+        invPdf.clear();
+        pathProb = {1.0f};
     }
 
     /// Initialize the query record for a recursive query
@@ -231,6 +236,8 @@ public:
         depth = parent.depth+1;
         medium = parent.medium;
         extra = parent.extra;
+        diffuseBounce = parent.diffuseBounce;
+        glossyBounce = parent.glossyBounce;
     }
 
     /// Initialize the query record for a recursive query
@@ -241,6 +248,8 @@ public:
         depth = parent.depth+1;
         medium = parent.medium;
         extra = parent.extra;
+        diffuseBounce = parent.diffuseBounce;
+        glossyBounce = parent.glossyBounce;
     }
 
     /**
@@ -306,6 +315,14 @@ public:
      * is dependent on the particular integrator implementation. (*)
      */
     int extra;
+
+    /** [cuteday] modified for bdpm again!
+     * The probability record on camera path.
+     */
+    ProbRec pathProb = {1.0};
+    ProbRec invPdf;
+    int diffuseBounce = 0;
+    int glossyBounce = 0;
 };
 
 /** \brief Abstract base class, which describes integrators

@@ -130,31 +130,43 @@ void ParticleTracer::process(const WorkUnit *workUnit, WorkResult *workResult,
         Spectrum power;
         Ray ray;
 
-        if (m_emissionEvents) {
+        ProbRec pathProb, invPdf;
+        Float prob = 1.0;
+
+        if (true) {
             /* Sample the position and direction component separately to
                generate emission events */
             power = m_scene->sampleEmitterPosition(pRec, m_sampler->next2D());
             emitter = static_cast<const Emitter *>(pRec.object);
             medium = emitter->getMedium();
 
-            /* Forward the sampling event to the attached handler */
+            // /* Forward the sampling event to the attached handler */
             handleEmission(pRec, medium, power);
 
             DirectionSamplingRecord dRec;
-            power *= emitter->sampleDirection(dRec, pRec,
-                    emitter->needsDirectionSample() ? m_sampler->next2D() : Point2(0.5f));
+            power *= emitter->sampleDirection(dRec, pRec, m_sampler->next2D());
+            // power *= emitter->sampleDirection(dRec, pRec,
+            //         emitter->needsDirectionSample() ? m_sampler->next2D() : Point2(0.5f));
             ray.setTime(pRec.time);
             ray.setOrigin(pRec.p);
             ray.setDirection(dRec.d);
+            handleNewParticle();    // [cuteday] we must have this to avoid errors
+
+            Float P0 = m_scene->pdfEmitterPosition(pRec) * emitter->pdfDirection(dRec, pRec);
+            // P0 = pRec.pdf * dRec.pdf;    // (equivalent...)
+            prob = P0;
+            //Log(EDebug, "current emitter sampling: P^E_1 = %f", P0);
+        
         } else {
             /* Sample both components together, which is potentially
                faster / uses a better sampling strategy */
-
             power = m_scene->sampleEmitterRay(ray, emitter,
                 m_sampler->next2D(), m_sampler->next2D(), pRec.time);
             medium = emitter->getMedium();
             handleNewParticle();
         }
+
+        pathProb.push_back(prob);
 
         int depth = 1, nullInteractions = 0;
         bool delta = false;
@@ -163,6 +175,8 @@ void ParticleTracer::process(const WorkUnit *workUnit, WorkResult *workResult,
         while (!throughput.isZero() && (depth <= m_maxDepth || m_maxDepth < 0)) {
             m_scene->rayIntersectAll(ray, its);
 
+            Float bsdfPdf = 1.0, invBsdfPdf = 1.0;
+
             /* ==================================================================== */
             /*                 Radiative Transfer Equation sampling                 */
             /* ==================================================================== */
@@ -170,6 +184,8 @@ void ParticleTracer::process(const WorkUnit *workUnit, WorkResult *workResult,
                 /* Sample the integral
                   \int_x^y tau(x, x') [ \sigma_s \int_{S^2} \rho(\omega,\omega') L(x,\omega') d\omega' ] dx'
                 */
+
+                // [cuteday] Media transfer is not handled now...
 
                 throughput *= mRec.sigmaS * mRec.transmittance / mRec.pdfSuccess;
 
@@ -197,13 +213,29 @@ void ParticleTracer::process(const WorkUnit *workUnit, WorkResult *workResult,
 
                 const BSDF *bsdf = its.getBSDF();
 
-                /* Forward the surface scattering event to the attached handler */
-                handleSurfaceInteraction(depth, nullInteractions, delta, its, medium, throughput*power);
+                /** [cuteday]
+                 *  1. handle the path prob record to my override handleSurfaceInteraction()
+                 *      [*] the prob is not multiplied with PDF_sample of current intersection
+                 *  2. do next bsdf sample
+                 *  3. prob *= PDF_bsdf * PDF_rr
+                 *  4. pathProb.pb(prob), invPdf.pb(curInvPdf)
+                */
 
+                /* Forward the surface scattering event to the attached handler */
+                handleSurfaceInteraction(depth, nullInteractions, delta, its, medium, throughput*power, invPdf, pathProb);
+
+                // [cuteday] 
+                // the bsdfSamplingRecord for bsdfPdf and invBsdfPdf
+                // using square to cosine hemisquare 
                 BSDFSamplingRecord bRec(its, m_sampler, EImportance);
                 Spectrum bsdfWeight = bsdf->sample(bRec, m_sampler->next2D());
+                BSDFSamplingRecord bInvRec(its, bRec.wo, bRec.wi);
+
                 if (bsdfWeight.isZero())
                     break;
+
+                bsdfPdf = bsdf->pdf(bRec, bRec.sampledType & BSDF::EDelta ? EDiscrete : ESolidAngle);
+                invBsdfPdf = bsdf->pdf(bInvRec, bRec.sampledType & BSDF::EDelta ? EDiscrete : ESolidAngle);
 
                 /* Prevent light leaks due to the use of shading normals -- [Veach, p. 158] */
                 Vector wi = -ray.d, wo = its.toWorld(bRec.wo);
@@ -256,11 +288,19 @@ void ParticleTracer::process(const WorkUnit *workUnit, WorkResult *workResult,
                    Stop with at least some probability to avoid
                    getting stuck (e.g. due to total internal reflection) */
 
-                Float q = std::min(throughput.max(), (Float) 0.95f);
+                // Float q = std::min(throughput.max(), (Float) 0.95f);
+                Float q = 0.8f;     // [changed]!
                 if (m_sampler->next1D() >= q)
                     break;
                 throughput /= q;
+                // bsdfPdf /= q;      // [bdpm] seems the paper did not use PDF_rr...
             }
+            // [for bdpm] finally [4]...
+            prob *= bsdfPdf;
+            //Log(EDebug, "current bsdf prob: %f", bsdfPdf);
+            //Log(EDebug, "current inverse bsdf prob: %f", invBsdfPdf);
+            pathProb.push_back(prob);
+            invPdf.push_back(invBsdfPdf);
         }
     }
 }
@@ -277,6 +317,16 @@ void ParticleTracer::handleSurfaceInteraction(int depth, int nullInteractions,
 void ParticleTracer::handleMediumInteraction(int depth, int nullInteractions,
     bool delta, const MediumSamplingRecord &mRec, const Medium *medium,
     const Vector &wi, const Spectrum &weight) { }
+
+/* [for BDPM] added override functions */
+void ParticleTracer::handleSurfaceInteraction(int depth, int nullInteractions,
+    bool delta, const Intersection &its, const Medium *medium,
+    const Spectrum &weight, ProbRec& invPdf, ProbRec& pathProb) { }
+
+void ParticleTracer::handleMediumInteraction(int depth, int nullInteractions,
+    bool delta, const MediumSamplingRecord &mRec, const Medium *medium,
+    const Vector &wi, const Spectrum &weight, 
+    ProbRec& invPdf, ProbRec& pathProb) { }
 
 MTS_IMPLEMENT_CLASS(RangeWorkUnit, false, WorkUnit)
 MTS_IMPLEMENT_CLASS(ParticleProcess, true, ParallelProcess)

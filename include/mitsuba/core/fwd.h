@@ -189,4 +189,6 @@ namespace fs = boost::filesystem3;
 #  define INFINITY std::numeric_limits<double>::infinity()
 #endif
 
+typedef std::vector<float> ProbRec;
+
 #endif /* __MITSUBA_CORE_FWD_H_ */

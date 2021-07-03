@@ -46,6 +46,9 @@ struct PhotonData {
     uint8_t thetaN;         //!< Discretized surface normal (\a theta component)
     uint8_t phiN;           //!< Discretized surface normal (\a phi component)
     uint16_t depth;         //!< Photon depth (number of preceding interactions)
+    
+    ProbRec pathProb;    //[*] Probability on photon path {p_1, p_2, ..., p_t}
+    ProbRec invPdf;      //[*] Inversed sampling pdf (from w_o to w_i)
 };
 
 /** \brief Memory-efficient photon representation for use with
@@ -69,6 +72,12 @@ public:
     Photon(const Point &pos, const Normal &normal,
             const Vector &dir, const Spectrum &power,
             uint16_t depth);
+
+    /// [for BDPM] Construct from a photon interaction with records of path probabilities.
+    Photon(const Point &pos, const Normal &normal,
+            const Vector &dir, const Spectrum &power,
+            uint16_t depth, 
+            ProbRec& invPdf, ProbRec& pathProb);
 
     /// Unserialize from a binary data stream
     Photon(Stream *stream);

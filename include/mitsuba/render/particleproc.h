@@ -227,6 +227,16 @@ public:
         bool delta, const MediumSamplingRecord &mRec, const Medium *medium,
         const Vector &wi, const Spectrum &weight);
 
+    virtual void handleSurfaceInteraction(int depth_, int nullInteractions, bool delta,
+        const Intersection &its, const Medium *medium,
+        const Spectrum &weight,
+        ProbRec& invPdf, ProbRec& pathProb);
+
+    virtual void handleMediumInteraction(int depth, int nullInteractions, bool delta,
+        const MediumSamplingRecord &mRec, const Medium *medium,
+        const Vector &wi, const Spectrum &weight,
+        ProbRec& invPdf, ProbRec& pathProb);
+
     MTS_DECLARE_CLASS()
 protected:
     /// Protected constructor
