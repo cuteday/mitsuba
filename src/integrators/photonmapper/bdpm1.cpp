@@ -7,9 +7,9 @@
 
 MTS_NAMESPACE_BEGIN
 
-class BDPMIntegrator : public SamplingIntegrator {
+class BDPM1Integrator : public SamplingIntegrator {
 public:
-    BDPMIntegrator(const Properties &props) : SamplingIntegrator(props),
+    BDPM1Integrator(const Properties &props) : SamplingIntegrator(props),
           m_parentIntegrator(NULL) {
         /* Depth to start using russian roulette when tracing photons */
         m_rrDepth = props.getInteger("rrDepth", 5);
@@ -67,7 +67,7 @@ public:
     }
 
     /// Unserialize from a binary data stream
-    BDPMIntegrator(Stream *stream, InstanceManager *manager)
+    BDPM1Integrator(Stream *stream, InstanceManager *manager)
      : SamplingIntegrator(stream, manager), m_parentIntegrator(NULL) {
         m_maxDepth = stream->readInt();
         m_rrDepth = stream->readInt();
@@ -81,7 +81,7 @@ public:
         configure();
     }
 
-    virtual ~BDPMIntegrator() {
+    virtual ~BDPM1Integrator() {
         ref<Scheduler> sched = Scheduler::getInstance();
         if (m_globalPhotonMapID)
             sched->unregisterResource(m_globalPhotonMapID);
@@ -212,100 +212,89 @@ public:
         Intersection &its = rRec.its;
         const Scene *scene = rRec.scene;
 
+		Spectrum throughput(1.0f);
+
         /* Perform the first ray intersection (or ignore if the intersection has already been provided). */
         rRec.rayIntersect(ray);
 
-        if (!its.isValid()) {
-            /* If no intersection could be found, possibly return
-               attenuated radiance from a background luminaire */
-            if ((rRec.type & RadianceQueryRecord::EEmittedRadiance) && !m_hideEmitters)
-                LiSurf = scene->evalEnvironment(ray);
-            return LiSurf;
-        }
+		while ((rRec.depth <= m_maxDepth && m_maxDepth > 0 ) || (rRec.depth <= m_maxCameraDepth && m_maxCameraDepth > 0 )){
+			if (!its.isValid()) {
+				/* If no intersection could be found, possibly return
+				attenuated radiance from a background luminaire */
+				if ((rRec.type & RadianceQueryRecord::EEmittedRadiance) && !m_hideEmitters)
+					LiSurf += throughput *scene->evalEnvironment(ray);
+				break;
+			}
 
-        /* Possibly include emitted radiance if requested */
-        if (its.isEmitter() && (rRec.type & RadianceQueryRecord::EEmittedRadiance) && !m_hideEmitters)
-            LiSurf += its.Le(-ray.d);
+			/* Possibly include emitted radiance if requested */
+			if (its.isEmitter() && (rRec.type & RadianceQueryRecord::EEmittedRadiance) && !m_hideEmitters)
+				LiSurf += throughput *its.Le(-ray.d);
 
-        /* Subsurface */
-        if (its.hasSubsurface() && (rRec.type & RadianceQueryRecord::ESubsurfaceRadiance))
-            LiSurf += its.LoSub(scene, rRec.sampler, -ray.d, rRec.depth);
+			/* Subsurface */
+			if (its.hasSubsurface() && (rRec.type & RadianceQueryRecord::ESubsurfaceRadiance))
+				LiSurf += throughput *its.LoSub(scene, rRec.sampler, -ray.d, rRec.depth);
 
-        const BSDF *bsdf = its.getBSDF(ray);
-        unsigned int bsdfType = bsdf->getType() & BSDF::EAll;
+			const BSDF *bsdf = its.getBSDF(ray);
+			unsigned int bsdfType = bsdf->getType() & BSDF::EAll;
 
-        /* Irradiance cache query -> treat as diffuse */
-        //bool isDiffuse = (bsdfType == BSDF::EDiffuseReflection) || cacheQuery;
-        //if (isDiffuse && (dot(its.shFrame.n, ray.d) < 0 || (bsdf->getType() & BSDF::EBackSide))) {
-        if (bsdfType & BSDF::ESmooth) {
-        //if (bsdfType == BSDF::EDiffuseReflection) {
-            /* Estimate radiance using photon map on diffuse surfaces */
-            int maxDepth = m_maxDepth == -1 ? INT_MAX : (m_maxDepth-rRec.depth);
-            if (rRec.type & RadianceQueryRecord::EIndirectSurfaceRadiance && m_globalPhotonMap.get()){
-                /* diffuse bsdf => (Spectrum)diffCol * INV_PI */
-                // LiSurf += m_globalPhotonMap->estimateIrradiance(its.p,
-                //     its.shFrame.n, m_globalLookupRadius, maxDepth,
-                //     m_globalLookupSize) * bsdf->getDiffuseReflectance(its) * INV_PI;
-                
-                LiSurf += m_globalPhotonMap->estimateRadianceBDPM(its, m_globalLookupRadius, m_globalLookupSize,
-                    maxDepth, rRec.pathProb, rRec.invPdf, m_rrDepth, 0.8f);
-            }
-        }
+			/* Irradiance cache query -> treat as diffuse */
+			if (bsdfType & BSDF::ESmooth) {
+				/* Estimate radiance using photon map on diffuse surfaces */
+				int maxDepth = m_maxDepth == -1 ? INT_MAX : (m_maxDepth-rRec.depth);
+				if (rRec.type & RadianceQueryRecord::EIndirectSurfaceRadiance && m_globalPhotonMap.get()){
+					LiSurf += throughput * m_globalPhotonMap->estimateRadianceBDPM(its, m_globalLookupRadius, m_globalLookupSize,
+						maxDepth, rRec.pathProb, rRec.invPdf, m_rrDepth, 0.8f);
+				}
+			}
 
-        /* Determine if max depth is achieved AFTER the radiance extimate of this intersection. */
-        if ((rRec.depth >= m_maxDepth && m_maxDepth > 0 )|| (rRec.depth >= m_maxCameraDepth && m_maxCameraDepth > 0 ))
-            return LiSurf;
+			/* Determine if the ray is absorbed by the RR strategy. */
+			Float judgeRR = rRec.nextSample1D();
+			Float probRR = rRec.depth > m_rrDepth ? 0.8f : 1.0f;
+			if(judgeRR > probRR){
+				break;
+			}
 
-        /* Determine if the ray is absorbed by the RR strategy. */
-        Float judgeRR = rRec.nextSample1D();
-        Float probRR = rRec.depth > m_rrDepth ? 0.8f : 1.0f;
-        if(judgeRR > probRR){
-            return LiSurf;
-        }
+			/*               BSDF sampling               */
+			Point2 sample = rRec.nextSample2D();
 
-        /*               BSDF sampling               */
-        Point2 sample = rRec.nextSample2D();
-        RadianceQueryRecord rRec2;
+			/* Sample BSDF * cos(theta) */
+			BSDFSamplingRecord bRec(its, rRec.sampler, ERadiance);
 
-        /* Sample BSDF * cos(theta) */
-        BSDFSamplingRecord bRec(its, rRec.sampler, ERadiance);
+			Spectrum bsdfVal = bsdf->sample(bRec, sample);
+			//BSDFSamplingRecord bInvRec(its, bRec.wo, bRec.wi);
+			BSDFSamplingRecord bInvRec = bRec;
+			bInvRec.wi = bRec.wo, bInvRec.wo = bRec.wi;
 
-        Spectrum bsdfVal = bsdf->sample(bRec, sample);
-        //BSDFSamplingRecord bInvRec(its, bRec.wo, bRec.wi);
-        BSDFSamplingRecord bInvRec = bRec;
-        bInvRec.wi = bRec.wo, bInvRec.wo = bRec.wi;
+			Float bsdfPdf, invBsdfPdf;
+			bsdfPdf = bsdf->pdf(bRec, bRec.sampledType & BSDF::EDelta ? EDiscrete : ESolidAngle);
+			invBsdfPdf = bsdf->pdf(bInvRec, bRec.sampledType & BSDF::EDelta ? EDiscrete : ESolidAngle);
 
-        Float bsdfPdf, invBsdfPdf;
-        bsdfPdf = bsdf->pdf(bRec, bRec.sampledType & BSDF::EDelta ? EDiscrete : ESolidAngle);
-        invBsdfPdf = bsdf->pdf(bInvRec, bRec.sampledType & BSDF::EDelta ? EDiscrete : ESolidAngle);
+			if (bsdfVal.isZero())
+				break;
 
-        if (bsdfVal.isZero())
-            return LiSurf;
+			/* Trace a ray in this direction */
+			RayDifferential bsdfRay(its.p, its.toWorld(bRec.wo), ray.time);
+			scene->rayIntersect(bsdfRay, its);
 
-        /* Trace a ray in this direction, but leave computing intersection to next recurse... */
-        RayDifferential bsdfRay(its.p, its.toWorld(bRec.wo), ray.time);
-        rRec2.recursiveQuery(rRec, RadianceQueryRecord::ERadiance);
+			if (bRec.sampledType & BSDF::EDelta){
+				if (++rRec.glossyBounce >= m_maxCameraGlossyBounce)
+					break;
+			}
+			else if (bRec.sampledType & BSDF::ESmooth){
+				if (++rRec.diffuseBounce >= m_maxCameraDiffuseBounce)
+					break;
+			}
 
-        if (bRec.sampledType & BSDF::EDelta){
-            rRec2.glossyBounce++;
-            if (rRec2.glossyBounce >= m_maxCameraGlossyBounce)
-                return LiSurf;
-        }
-        else if (bRec.sampledType & BSDF::ESmooth){
-            rRec2.diffuseBounce++;
-            if (rRec2.diffuseBounce >= m_maxCameraDiffuseBounce)
-                return LiSurf;
-        }
+			throughput *= bsdfVal / probRR;
 
-        // [for bdpm] recursively added path prob records
-        rRec2.pathProb = rRec.pathProb;
-        rRec2.pathProb.push_back(rRec.pathProb.back() * bsdfPdf);
-        rRec2.invPdf = rRec.invPdf;
-        rRec2.invPdf.push_back(invBsdfPdf);
+			// [for bdpm] recursively added path prob records
+			rRec.depth++;
+			rRec.pathProb.push_back(rRec.pathProb.back() * bsdfPdf);
+			rRec.invPdf.push_back(invBsdfPdf);
 
-        //Log(EInfo, "Current depth %d, pathProb length %d, invPdf length %d", rRec2.depth, rRec2.pathProb.size(), rRec2.invPdf.size());
-        LiSurf += bsdfVal * m_parentIntegrator->Li(bsdfRay, rRec2) / probRR ;
-
+			//Log(EInfo, "Current depth %d, pathProb length %d, invPdf length %d", rRec2.depth, rRec2.pathProb.size(), rRec2.invPdf.size());
+		
+		}
         //Log(EInfo, "Current LiSurf: %f", LiSurf);
 
         return LiSurf;
@@ -313,7 +302,7 @@ public:
 
     std::string toString() const {
         std::ostringstream oss;
-        oss << "BDPMIntegrator[" << endl
+        oss << "BDPM1Integrator[" << endl
             << "  maxDepth = " << m_maxDepth << "," << endl
             << "  rrDepth = " << m_rrDepth << "," << endl
             << "  globalPhotons = " << m_globalPhotons << "," << endl
@@ -347,6 +336,6 @@ private:
     bool m_hideEmitters;
 };
 
-MTS_IMPLEMENT_CLASS_S(BDPMIntegrator, false, SamplingIntegrator)
-MTS_EXPORT_PLUGIN(BDPMIntegrator, "Photon map integrator");
+MTS_IMPLEMENT_CLASS_S(BDPM1Integrator, false, SamplingIntegrator)
+MTS_EXPORT_PLUGIN(BDPM1Integrator, "Photon map integrator");
 MTS_NAMESPACE_END

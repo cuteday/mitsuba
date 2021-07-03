@@ -214,6 +214,12 @@ Spectrum PhotonMap::estimateRadianceBDPM(const Intersection &its,
 
         Vector wi = its.toLocal(-photon.getDirection());
 
+        Vector photonNormal = photon.getNormal();
+
+        // Non symmetry due to shading normals
+        Float wiDotGeoN = dot(wi, photonNormal),
+              wiDotShN = dot(wi, its.shFrame.n);
+
         // cuteday once here
         /* [BEGIN] The MIS weight calculation... */
         Float weightMIS = 1.0f;
@@ -259,6 +265,7 @@ Spectrum PhotonMap::estimateRadianceBDPM(const Intersection &its,
             }
             if(cameraDepth > rrDepth)
                 rem /= pow(rrProb, cameraDepth - rrDepth);
+            //Log(EInfo, "Current partial path prob: %f", pL * rem);
             denominator += pL * rem;
         }
         // [2] tracing back along photon path...
@@ -278,14 +285,18 @@ Spectrum PhotonMap::estimateRadianceBDPM(const Intersection &its,
             if (photonDepth > rrDepth)
                 rem /= pow(rrProb, photonDepth - rrDepth);
             denominator += pE * rem;
+            //Log(EInfo, "Current partial path prob: %f", pE * rem);
         }
 
-        //weightMIS = pE_t * pL_s / denominator;
-        Log(EDebug, "MIS weight for current photon: %f", weightMIS);
+        weightMIS = pE_t * pL_s / denominator;
+        weightMIS = std::min(weightMIS, 1.0f);
+        //Log(EInfo, "MIS weight for current photon: %f", weightMIS);
 
         /* [END] The MIS weight calculation... */
 
         result += weightMIS * photon.getPower() * bsdf->eval(bRec) * (sqrTerm*sqrTerm);
+        // result += weightMIS * photon.getPower() * bsdf->eval(bRec) * std::abs(wiDotShN / wiDotGeoN) ;
+        // result += weightMIS * photon.getPower() * bsdf->eval(bRec);
     }
 
     /* Based on the assumption that the surface is locally flat,

@@ -234,8 +234,8 @@ void ParticleTracer::process(const WorkUnit *workUnit, WorkResult *workResult,
                 if (bsdfWeight.isZero())
                     break;
 
-                bsdfPdf = bsdf->pdf(bRec, bRec.sampledType ==BSDF::EDeltaReflection ? EDiscrete : ESolidAngle);
-                invBsdfPdf = bsdf->pdf(bInvRec, bRec.sampledType ==BSDF::EDeltaReflection ? EDiscrete : ESolidAngle);
+                bsdfPdf = bsdf->pdf(bRec, bRec.sampledType & BSDF::EDelta ? EDiscrete : ESolidAngle);
+                invBsdfPdf = bsdf->pdf(bInvRec, bRec.sampledType & BSDF::EDelta ? EDiscrete : ESolidAngle);
 
                 /* Prevent light leaks due to the use of shading normals -- [Veach, p. 158] */
                 Vector wi = -ray.d, wo = its.toWorld(bRec.wo);
