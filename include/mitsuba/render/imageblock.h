@@ -93,6 +93,9 @@ public:
     /// Return a pointer to the underlying bitmap representation
     inline Bitmap *getBitmap() { return m_bitmap; }
 
+    /// Return a pointer to the underlying bitmap representation
+    inline const ReconstructionFilter *getReconstructionFilter() const { return m_filter; }
+
     /// Return a pointer to the underlying bitmap representation (const version)
     inline const Bitmap *getBitmap() const { return m_bitmap.get(); }
 

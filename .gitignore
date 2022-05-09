@@ -26,6 +26,7 @@ build/mitsuba-msvc2017.suo
 build/mitsuba-msvc2017.vcxproj.user
 build/.vs/**/*
 data/windows/mitsuba_res.res
+data/windows
 dist
 
 # Debugging history files
@@ -51,3 +52,4 @@ scenes/
 .cproject
 .project
 .vscode
+.vs
