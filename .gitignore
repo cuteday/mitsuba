@@ -13,6 +13,7 @@ doc/plugins_generated.tex
 .sconf_temp
 build/release
 build/debug
+vbuild
 debian
 .sconsign.dblite
 config.py
@@ -25,6 +26,7 @@ build/mitsuba-msvc2017.suo
 build/mitsuba-msvc2017.vcxproj.user
 build/.vs/**/*
 data/windows/mitsuba_res.res
+data/windows
 dist
 
 # Debugging history files
@@ -42,9 +44,12 @@ Mitsuba.app
 /textures
 mitsuba.*.log
 *.exr
+scenes/
 
 # Eclipse CDT project files
 .externalToolBuilders
 .settings
 .cproject
 .project
+.vscode
+.vs
